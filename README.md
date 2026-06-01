@@ -1,8 +1,8 @@
 # lszorro
 
-WIP - Dynamic Zorro expansion board lister for Amiga UNIX (AMIX), in the style of `lspci`/`lsusb`.
+Dynamic Zorro expansion board lister for Amiga UNIX (AMIX), in the style of `lspci`/`lsusb`.
 
-Scans the Zorro II address space via `/dev/mem` and identifies expansion boards from a built-in database of 461 manufacturer/product entries (sourced from the Linux kernel's `zorro.ids`).
+Identifies all Kickstart-configured expansion boards from a built-in database of 461 manufacturer/product entries (sourced from the Linux kernel's `zorro.ids`). This includes cards whose Zorro address space is inaccessible from userspace on a running AMIX — such as RTG graphics cards and video digitizers.
 
 This is a hobby project developed out of curiosity about forgotten Amiga Unix hardware. It builds on the earlier static scanner `amix_zp1_scan.c` from the [va2000-amix](https://github.com/asokero/va2000-amix) project.
 
@@ -16,7 +16,7 @@ lszorro -v       # verbose: decoded fields and raw hex dump
 lszorro -a       # all 461 database entries, marked found or not found
 ```
 
-Must be run as root (requires `/dev/mem` access).
+Must be run as root (requires `/dev/mem` and `/dev/kmem` access).
 
 ---
 
@@ -28,36 +28,40 @@ Copy the source files to the AMIX machine and compile with the native C compiler
 cc lszorro.c -o lszorro
 ```
 
-No installer, no dependencies beyond the standard C library. Transfer via NFS, floppy, or whatever is available.
+No installer, no dependencies beyond the standard C library.
 
 ---
 
 ## How it works
 
-lszorro scans two address ranges in the Zorro II bus space:
+lszorro uses three detection methods, tried in order:
 
-- **I/O slots:** `0xE90000–0xEFFFFF` (8 × 64 KB)
-- **Memory area:** `0x200000–0x9FFFFF` (64 KB steps)
+**1. `bootinfo.autocon[]` via `/dev/kmem`** (primary)
 
-At each address it attempts to `mmap` 128 bytes of `/dev/mem` and applies two detection methods in order:
+AMIX does not tear down the Kickstart-configured board list after booting. The kernel global `bootinfo.autocon[16]` (a `struct ConfigDev` array in `kernel/support.c`) permanently retains the manufacturer ID, product ID, board address, and size for every board Kickstart configured — regardless of whether AMIX has a driver for the board.
 
-**1. AutoConfig nibble decode** — The standard Zorro II mechanism. Each logical byte of the board's ID ROM is stored as two nibbles in consecutive 16-bit words, with most fields ones-complement inverted. Standard I/O cards (ethernet, audio, SCSI, serial) that keep their AutoConfig ROM accessible at their base address are detected this way.
+This is the most complete detection method. It finds boards that the `/dev/mem` scan cannot reach:
 
-**2. VA2000 firmware fingerprint** — The MNT VA2000 RTG card does not expose its AutoConfig ROM at offset 0; instead its register file is mapped there directly. The 16-bit `fw_version` field at offset 0 is used as the identification signal.
+- **RTG cards returning all-0xFF** (e.g. Picasso II): framebuffer and register windows return bus float without driver initialisation
+- **Video digitizers with null nibble response** (e.g. VLab): return `FF 00 FF 00...` which decodes to manufacturer 0x0000
+
+The `struct ConfigDev` layout on AMIX is 68 bytes and differs slightly from the standard AmigaOS definition (Node padded to 16 bytes, trimmed ExpansionRom). The `bootinfo.autocon[0]` address (`0x080DC3C8`) was determined empirically on this machine and is kernel-version dependent.
+
+**2. AutoConfig ROM nibble decode** (fallback)
+
+Standard Zorro II mechanism. Each logical byte N of the board's ID ROM is stored as two nibbles in consecutive 16-bit words at physical offsets N×4 and N×4+2, with most fields ones-complement inverted. A decoded manufacturer ID of zero is rejected as invalid data.
+
+**3. VA2000 firmware fingerprint** (fallback)
+
+The MNT VA2000 RTG card is not Kickstart-autoconfigured and therefore absent from `bootinfo`. It does not expose an AutoConfig ROM at offset 0; instead its register file is mapped there. The 16-bit `fw_version` field at offset 0 in range 1–511 is used as the identifier.
 
 ---
 
-## Why some boards are not detected
+## Why some boards are still not detected
 
-AI Slop Analysis is that: Detection depends on being able to `mmap` the board's address and find either AutoConfig nibble data or a known register signature at offset 0.
+**Accelerator boards whose RAM is AMIX system memory** (e.g. PP&S Mercury): the board's fast RAM is used directly as AMIX kernel/user memory. The board may not appear in `bootinfo.autocon[]` if Kickstart treats it as memory rather than an expansion board.
 
-**Boards with no driver and framebuffer at offset 0** (e.g. Piccolo / Ingenieurbüro Helfrich): the framebuffer VRAM is readable but contains pixel data, not AutoConfig nibbles. The register window may generate bus errors when accessed without prior initialisation, causing `mmap` to fail. No reliable fingerprint exists for uninitialized VRAM.
-
-**Accelerator boards whose RAM is used as AMIX system memory** (e.g. PP&S Mercury): AMIX maps the board's fast RAM as kernel pages. Those physical addresses are inaccessible via `/dev/mem` from userspace.
-
-**Boards outside the scanned range**: Zorro III is not supported by AMIX and is not scanned.
-
-In general: I/O cards are detected reliably. Memory expansion cards and accelerators usually are not.
+**Boards requiring initialisation before AutoConfig exposure**: some designs do not expose the config ROM without prior setup that AMIX never performs.
 
 ---
 
@@ -66,13 +70,16 @@ In general: I/O cards are detected reliably. Memory expansion cards and accelera
 - Amiga 3000, 68030, AMIX SVR4 2.1p2a
 - Compiled with the native AT&T System V C compiler (`cc`)
 
-Boards confirmed working:
+Confirmed boards on this machine:
 
 | Board | ID | Method |
 |---|---|---|
-| Commodore A2065 Ethernet | `0202:70` | AutoConfig |
-| ACT Prelude Audio | `4231:01` | AutoConfig |
-| MNT VA2000 RTG (fw 0x5A) | `6D6E:00` | Fingerprint |
+| Commodore A2065 Ethernet | `0202:70` | kmem + AutoConfig |
+| ACT Prelude Audio | `4231:01` | kmem + AutoConfig |
+| Village Tronic Picasso II RAM | `0877:0B` | kmem only |
+| Village Tronic Picasso II | `0877:0C` | kmem only |
+| MacroSystems VLab | `4754:04` | kmem only |
+| MNT VA2000 RTG | `6D6E:00` | Fingerprint only |
 
 ---
 
@@ -81,6 +88,10 @@ Boards confirmed working:
 ```
 lszorro.c        Main source
 zorro_ids.h      Board database (auto-generated from Linux kernel zorro.ids)
+probe_mem.c      Diagnostic: raw /dev/mem dump across Zorro II address ranges
+test_execbase.c  Diagnostic: ExecBase -> expansion.library approach (fails on AMIX)
+read_kmem.c      Standalone tool: dump bootinfo.autocon[] from /dev/kmem
+PROGRESS.md      Research notes: bootinfo discovery, struct layout, kmem address
 ```
 
 ---
@@ -89,13 +100,12 @@ zorro_ids.h      Board database (auto-generated from Linux kernel zorro.ids)
 
 This is a hobby project. Use at your own risk.
 
-- Tested on one specific machine and AMIX version. Other configurations may behave differently.
-- Not affiliated with MNT Research, Commodore, Ingenieurbüro Helfrich, or any other organisation mentioned.
+- The `bootinfo` kernel address (`0x080DC3C8`) is specific to this machine and AMIX version. On a system compiled from different sources or with a different amount of fast RAM, the address will differ.
+- Tested on one specific machine and AMIX version.
+- Not affiliated with MNT Research, Commodore, Village Tronic, or any other organisation mentioned.
 
 ---
 
 ## License
 
 MIT License. See LICENSE file.
-
--Antti Sokero 2026
