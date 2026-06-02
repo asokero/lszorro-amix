@@ -34,7 +34,7 @@ No installer, no dependencies beyond the standard C library.
 
 ## How it works
 
-lszorro uses three detection methods, tried in order:
+lszorro uses two detection methods, tried in order:
 
 **1. `bootinfo.autocon[]` via `/dev/kmem`** (primary)
 
@@ -44,16 +44,13 @@ This is the most complete detection method. It finds boards that the `/dev/mem` 
 
 - **RTG cards returning all-0xFF** (e.g. Picasso II): framebuffer and register windows return bus float without driver initialisation
 - **Video digitizers with null nibble response** (e.g. VLab): return `FF 00 FF 00...` which decodes to manufacturer 0x0000
+- **RTG cards with standard AutoConfig** (e.g. VA2000): found here with the correct product ID
 
 The `struct ConfigDev` layout on AMIX is 68 bytes and differs slightly from the standard AmigaOS definition (Node padded to 16 bytes, trimmed ExpansionRom). The `bootinfo.autocon[0]` address (`0x080DC3C8`) was determined empirically on this machine and is kernel-version dependent.
 
 **2. AutoConfig ROM nibble decode** (fallback)
 
-Standard Zorro II mechanism. Each logical byte N of the board's ID ROM is stored as two nibbles in consecutive 16-bit words at physical offsets N×4 and N×4+2, with most fields ones-complement inverted. A decoded manufacturer ID of zero is rejected as invalid data.
-
-**3. VA2000 firmware fingerprint** (fallback)
-
-The MNT VA2000 RTG card is not Kickstart-autoconfigured and therefore absent from `bootinfo`. It does not expose an AutoConfig ROM at offset 0; instead its register file is mapped there. The 16-bit `fw_version` field at offset 0 in range 1–511 is used as the identifier.
+Standard Zorro II mechanism. Each logical byte N of the board's ID ROM is stored as two nibbles in consecutive 16-bit words at physical offsets N×4 and N×4+2, with most fields ones-complement inverted. A decoded manufacturer ID of zero is rejected as invalid data. This method catches any boards present but missing from `bootinfo` (unlikely in practice).
 
 ---
 
@@ -79,7 +76,8 @@ Confirmed boards on this machine:
 | Village Tronic Picasso II RAM | `0877:0B` | kmem only |
 | Village Tronic Picasso II | `0877:0C` | kmem only |
 | MacroSystems VLab | `4754:04` | kmem only |
-| MNT VA2000 RTG | `6D6E:00` | Fingerprint only |
+| MNT VA2000 RTG | `6D6E:01` | kmem |
+| Commodore A2088 ISA Bridge | `0201:01` | kmem |
 
 ---
 

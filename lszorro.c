@@ -25,11 +25,6 @@
  *      are ones-complement inverted. A decoded manufacturer of 0x0000 is
  *      rejected (e.g. VLab returns FF 00 FF 00... which inverts to zero).
  *
- *   3. VA2000 firmware fingerprint (fallback)
- *      MNT VA2000 RTG card maps its register file at the base address
- *      instead of an AutoConfig ROM. The 16-bit fw_version at offset 0
- *      in range 1-511 is used as the identifier.
- *
  * Compile: cc lszorro.c -o lszorro
  * Must run as root (/dev/mem and /dev/kmem access).
  */
@@ -101,8 +96,7 @@
 #define RAW_SAVE   64
 
 #define DET_AUTOCONFIG  0
-#define DET_FINGERPRINT 1
-#define DET_KMEM        2
+#define DET_KMEM        1
 
 struct board {
     unsigned long  base;
@@ -114,7 +108,6 @@ struct board {
     unsigned char  er_flags;
     unsigned long  serial;
     unsigned short diagvec;
-    unsigned short fw_ver;
     unsigned char  raw[RAW_SAVE];
 };
 
@@ -235,26 +228,19 @@ print_verbose(b)
     struct board *b;
 {
     int i;
-    if (b->det == DET_FINGERPRINT) {
-        printf("  Detected:  fingerprint (direct register read)\n");
-        printf("  FW ver:    0x%04X (%u)\n",
-               (unsigned)b->fw_ver, (unsigned)b->fw_ver);
-        printf("  Size:      %s (Zorro II window)\n", size_str(b->size));
-    } else {
-        if (b->det == DET_KMEM)
-            printf("  Detected:  bootinfo.autocon[] via /dev/kmem\n");
-        else
-            printf("  Detected:  AutoConfig ROM (/dev/mem)\n");
-        printf("  Type:    0x%02X  Zorro II  %s%s%s%s\n",
-               (unsigned)b->er_type,
-               size_str(b->size),
-               (b->er_type & ERT_MEMLIST)   ? "  MEMLIST"   : "",
-               (b->er_type & ERT_DIAGVALID) ? "  DIAGVALID" : "",
-               (b->er_type & ERT_CHAINED)   ? "  CHAINED"   : "");
-        printf("  Flags:   0x%02X\n", (unsigned)b->er_flags);
-        printf("  Serial:  0x%08lX\n", b->serial);
-        printf("  DiagVec: 0x%04X\n", (unsigned)b->diagvec);
-    }
+    if (b->det == DET_KMEM)
+        printf("  Detected:  bootinfo.autocon[] via /dev/kmem\n");
+    else
+        printf("  Detected:  AutoConfig ROM (/dev/mem)\n");
+    printf("  Type:    0x%02X  Zorro II  %s%s%s%s\n",
+           (unsigned)b->er_type,
+           size_str(b->size),
+           (b->er_type & ERT_MEMLIST)   ? "  MEMLIST"   : "",
+           (b->er_type & ERT_DIAGVALID) ? "  DIAGVALID" : "",
+           (b->er_type & ERT_CHAINED)   ? "  CHAINED"   : "");
+    printf("  Flags:   0x%02X\n", (unsigned)b->er_flags);
+    printf("  Serial:  0x%08lX\n", b->serial);
+    printf("  DiagVec: 0x%04X\n", (unsigned)b->diagvec);
     printf("  Raw (%s 0x00-0x3F):\n",
            b->det == DET_KMEM ? "ConfigDev struct bytes" : "physical bytes");
     for (i = 0; i < RAW_SAVE; i++) {
@@ -336,7 +322,6 @@ scan_kmem()
         b->diagvec = km_ushort(buf, KM_ER_DIAGVEC);
         b->base    = km_ulong(buf, KM_BOARDADDR);
         b->size    = size_table[b->er_type & ERT_SIZEMASK];
-        b->fw_ver  = 0;
         b->det     = DET_KMEM;
         for (n = 0; n < RAW_SAVE; n++)
             b->raw[n] = buf[n];
@@ -361,7 +346,6 @@ probe(fd, base)
 {
     unsigned char *mem;
     struct board *b;
-    unsigned short fw;
     int i;
 
     mem = (unsigned char *)mmap(
@@ -384,7 +368,6 @@ probe(fd, base)
         b->diagvec = ac_word(mem, AC_DIAGVEC);
         b->base    = base;
         b->size    = size_table[b->er_type & ERT_SIZEMASK];
-        b->fw_ver  = 0;
         munmap((caddr_t)mem, AC_MAP_SIZE);
         if (b->manuf == 0)
             return;
@@ -392,23 +375,7 @@ probe(fd, base)
         return;
     }
 
-    /* Method 3: VA2000 firmware fingerprint */
-    fw = (unsigned short)(((unsigned short)mem[0] << 8) | mem[1]);
     munmap((caddr_t)mem, AC_MAP_SIZE);
-
-    if (fw >= 1 && fw <= 511) {
-        b->det     = DET_FINGERPRINT;
-        b->manuf   = 0x6D6E;
-        b->prod    = 0x00;
-        b->base    = base;
-        b->size    = 64UL * 1024UL;
-        b->fw_ver  = fw;
-        b->er_type = 0;
-        b->er_flags= 0;
-        b->serial  = 0;
-        b->diagvec = 0;
-        record_board(b);
-    }
 }
 
 static void
